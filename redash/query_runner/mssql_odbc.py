@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 try:
     import pyodbc
-
     enabled = True
 except ImportError:
     enabled = False
@@ -25,36 +24,42 @@ class SQLServerODBC(BaseSQLQueryRunner):
         return {
             "type": "object",
             "properties": {
-                "server": {"type": "string"},
-                "port": {"type": "number", "default": 1433},
-                "user": {"type": "string"},
-                "password": {"type": "string"},
-                "db": {"type": "string", "title": "Database Name"},
+                "user": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "server": {
+                    "type": "string",
+                    "default": "127.0.0.1"
+                },
+                "port": {
+                    "type": "number",
+                    "default": 1433
+                },
                 "charset": {
                     "type": "string",
                     "default": "UTF-8",
-                    "title": "Character Set",
+                    "title": "Character Set"
                 },
-                "use_ssl": {"type": "boolean", "title": "Use SSL", "default": False,},
-                "verify_ssl": {
-                    "type": "boolean",
-                    "title": "Verify SSL certificate",
-                    "default": True,
+                "db": {
+                    "type": "string",
+                    "title": "Database Name"
                 },
+                "application_intent": {
+                    "type": "string"
+                    "default": "ReadOnly"
+                    "title": "Application Intent"
+                },
+                "driver": {
+                    "type": "string",
+                    "title": "Driver Identifier",
+                    "default": "{ODBC Driver 13 for SQL Server}"
+                }
             },
-            "order": [
-                "server",
-                "port",
-                "user",
-                "password",
-                "db",
-                "charset",
-                "use_ssl",
-                "verify_ssl",
-            ],
-            "required": ["server", "user", "password", "db"],
-            "secret": ["password"],
-            "extra_options": ["verify_ssl", "use_ssl"],
+            "required": ["db"],
+            "secret": ["password"]
         }
 
     @classmethod
@@ -86,41 +91,40 @@ class SQLServerODBC(BaseSQLQueryRunner):
 
         results = json_loads(results)
 
-        for row in results["rows"]:
-            if row["table_schema"] != self.configuration["db"]:
-                table_name = "{}.{}".format(row["table_schema"], row["table_name"])
+        for row in results['rows']:
+            if row['table_schema'] != self.configuration['db']:
+                table_name = u'{}.{}'.format(row['table_schema'], row['table_name'])
             else:
-                table_name = row["table_name"]
+                table_name = row['table_name']
 
             if table_name not in schema:
-                schema[table_name] = {"name": table_name, "columns": []}
+                schema[table_name] = {'name': table_name, 'columns': []}
 
-            schema[table_name]["columns"].append(row["column_name"])
+            schema[table_name]['columns'].append(row['column_name'])
 
-        return list(schema.values())
+        return schema.values()
 
     def run_query(self, query, user):
         connection = None
 
         try:
-            server = self.configuration.get("server")
-            user = self.configuration.get("user", "")
-            password = self.configuration.get("password", "")
-            db = self.configuration["db"]
-            port = self.configuration.get("port", 1433)
-            charset = self.configuration.get("charset", "UTF-8")
+            server = self.configuration.get('server', '')
+            user = self.configuration.get('user', '')
+            password = self.configuration.get('password', '')
+            db = self.configuration['db']
+            port = self.configuration.get('port', 1433)
+            charset = self.configuration.get('charset', 'UTF-8')
+            application_intent = self.configuration.get('application_intent', 'ReadOnly')
+            driver = self.configuration.get('driver', '{ODBC Driver 13 for SQL Server}')
 
-            connection_string_fmt = "DRIVER={{ODBC Driver 17 for SQL Server}};PORT={};SERVER={};DATABASE={};UID={};PWD={}"
-            connection_string = connection_string_fmt.format(
-                port, server, db, user, password
-            )
-
-            if self.configuration.get("use_ssl", False):
-                connection_string += ";Encrypt=YES"
-
-                if not self.configuration.get("verify_ssl"):
-                    connection_string += ";TrustServerCertificate=YES"
-
+            connection_string_fmt = 'DRIVER={};PORT={};SERVER={};DATABASE={};UID={};PWD={};ApplicationIntent={}'
+            connection_string = connection_string_fmt.format(driver,
+                                                             port,
+                                                             server,
+                                                             db,
+                                                             user,
+                                                             password,
+                                                             application_intent)
             connection = pyodbc.connect(connection_string)
             cursor = connection.cursor()
             logger.debug("SQLServerODBC running query: %s", query)
@@ -128,15 +132,10 @@ class SQLServerODBC(BaseSQLQueryRunner):
             data = cursor.fetchall()
 
             if cursor.description is not None:
-                columns = self.fetch_columns(
-                    [(i[0], types_map.get(i[1], None)) for i in cursor.description]
-                )
-                rows = [
-                    dict(zip((column["name"] for column in columns), row))
-                    for row in data
-                ]
+                columns = self.fetch_columns([(i[0], types_map.get(i[1], None)) for i in cursor.description])
+                rows = [dict(zip((c['name'] for c in columns), row)) for row in data]
 
-                data = {"columns": columns, "rows": rows}
+                data = {'columns': columns, 'rows': rows}
                 json_data = json_dumps(data)
                 error = None
             else:
@@ -152,9 +151,10 @@ class SQLServerODBC(BaseSQLQueryRunner):
                 # Connection errors are `args[0][1]`
                 error = e.args[0][1]
             json_data = None
-        except (KeyboardInterrupt, JobTimeoutException):
+        except KeyboardInterrupt:
             connection.cancel()
-            raise
+            error = "Query cancelled by user."
+            json_data = None
         finally:
             if connection:
                 connection.close()
